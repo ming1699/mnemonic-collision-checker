@@ -1,31 +1,48 @@
-interface Checkpoint {
-  lastMnemonic: string;
-  lastPath: string;
-  lastIndex: number;
-  chainType: string;
-  timestamp: number;
-}
+import type { ICheckpoint } from '../types/index';
 
-const CHECKPOINT_KEY = 'collision_checkpoint';
+// 添加调试日志
+console.log('checkpoint.ts: 导出的类型和函数');
 
-export const saveCheckpoint = (data: Checkpoint) => {
+export const saveCheckpoint = (mnemonic: string, count: number) => {
+  // 添加调试日志
+  console.log('保存检查点:', { mnemonic, count });
+  
   try {
-    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(data));
+    const checkpoint: ICheckpoint = {
+      timestamp: Date.now(),
+      lastMnemonic: mnemonic,
+      count: count
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('collision_checkpoint', JSON.stringify(checkpoint));
+    }
   } catch (error) {
-    console.error('Error saving checkpoint:', error);
+    console.error('保存检查点失败:', error);
   }
 };
 
-export const loadCheckpoint = (): Checkpoint | null => {
+export const loadCheckpoint = (): ICheckpoint | null => {
+  // 添加调试日志
+  console.log('加载检查点');
+  
   try {
-    const data = localStorage.getItem(CHECKPOINT_KEY);
-    return data ? JSON.parse(data) : null;
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('collision_checkpoint');
+      if (saved) {
+        return JSON.parse(saved) as ICheckpoint;
+      }
+    }
   } catch (error) {
-    console.error('Error loading checkpoint:', error);
-    return null;
+    console.error('加载检查点失败:', error);
   }
+  return null;
 };
 
 export const clearCheckpoint = () => {
-  localStorage.removeItem(CHECKPOINT_KEY);
-}; 
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('collision_checkpoint');
+  }
+};
+
+// 导出接口
+export type { ICheckpoint }; 

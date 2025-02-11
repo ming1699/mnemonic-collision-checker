@@ -3,20 +3,52 @@ import { Button, Input, Card, CardContent } from "@/components/ui";
 import { generateMnemonic, mnemonicToSeedSync } from "bip39";
 import { getAddressBalances, deriveAddressFromSeed, CHAIN_CONFIGS, type ChainType } from "@/utils/blockchain";
 import { loadCheckpoint, saveCheckpoint } from "@/utils/checkpoint";
+import type { ICheckpoint, IBalance, IValidMnemonic } from '../types/index';
 
-export default function MnemonicCollision() {
+// 调试日志：检查所有导入
+console.log('index.tsx: 导入检查', {
+  useState: typeof useState !== 'undefined',
+  generateMnemonic: typeof generateMnemonic !== 'undefined',
+  getAddressBalances: typeof getAddressBalances !== 'undefined',
+  loadCheckpoint: typeof loadCheckpoint !== 'undefined'
+});
+
+// 调试日志：检查全局类型
+console.log('index.tsx: 全局类型检查', {
+  globalThis: typeof globalThis !== 'undefined',
+  window: typeof window !== 'undefined'
+});
+
+// 调试日志：检查运行环境
+console.log('index.tsx: 环境检查', {
+  env: process.env.NODE_ENV,
+  isServer: typeof window === 'undefined'
+});
+
+// 组件定义
+const MnemonicCollision = () => {
+  // 调试日志：组件初始化
+  console.log('MnemonicCollision: 组件初始化开始');
+  
   const [mnemonic, setMnemonic] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
-  const [balances, setBalances] = useState([]);
-  const [validMnemonics, setValidMnemonics] = useState([]);
+  const [balances, setBalances] = useState<IBalance[]>([]);
+  const [validMnemonics, setValidMnemonics] = useState<IValidMnemonic[]>([]);
   const [loading, setLoading] = useState(false);
   const [isAutoRunning, setIsAutoRunning] = useState(false);
   const [checkCount, setCheckCount] = useState(0);
-  const autoCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const autoCheckRef = useRef<Worker | null>(null);
   const stopAutoCheckRef = useRef<(() => void) | null>(null);
   const [selectedChains, setSelectedChains] = useState<ChainType[]>(['ETH']);
   const [useCheckpoint, setUseCheckpoint] = useState(true);
-  const [checkpointData, setCheckpointData] = useState<Checkpoint | null>(null);
+  const [checkpointData, setCheckpointData] = useState<ICheckpoint | null>(null);
+
+  // 调试日志：组件状态初始化完成
+  console.log('MnemonicCollision: 状态初始化完成', {
+    hasCheckpointData: checkpointData !== null,
+    balancesLength: balances.length,
+    validMnemonicsLength: validMnemonics.length
+  });
 
   const generateRandomMnemonic = () => {
     const newMnemonic = generateMnemonic();
@@ -204,8 +236,13 @@ export default function MnemonicCollision() {
 
   const handleWorkerMessage = async (e: MessageEvent) => {
     if (e.data.type === 'checkpoint') {
-      saveCheckpoint(e.data.data);
-      setCheckpointData(e.data.data);
+      const { mnemonic, count } = e.data.data;
+      saveCheckpoint(mnemonic, count);
+      setCheckpointData({
+        timestamp: Date.now(),
+        lastMnemonic: mnemonic,
+        count: count
+      });
       return;
     }
 
@@ -379,4 +416,6 @@ export default function MnemonicCollision() {
       </div>
     </div>
   );
-} 
+};
+
+export default MnemonicCollision; 

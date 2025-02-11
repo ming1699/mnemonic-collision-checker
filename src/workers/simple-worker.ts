@@ -4,6 +4,9 @@ const wordlist = [
   // ... 这里需要添加完整的BIP39词表，为了简洁我只展示了一部分
 ];
 
+// 导出一个空对象使其成为模块
+export {};
+
 // 生成随机助记词的函数
 function generateMnemonic() {
   const strength = 128; // 12个词的助记词
@@ -21,7 +24,7 @@ function generateMnemonic() {
   return words.join(' ');
 }
 
-// Worker 的主要逻辑
+// 监听消息
 self.onmessage = (e) => {
   const { count } = e.data;
   let currentIndex = 0;
@@ -43,10 +46,10 @@ self.onmessage = (e) => {
       if (currentIndex < count) {
         setTimeout(generateAndSend, 100); // 每100ms生成一个新助记词
       }
-    } catch (error) {
+    } catch (error: any) {  // 显式指定 error 类型为 any
       self.postMessage({
         type: 'error',
-        error: error.message
+        data: error?.message || 'Unknown error'  // 使用可选链和默认值
       });
     }
   };

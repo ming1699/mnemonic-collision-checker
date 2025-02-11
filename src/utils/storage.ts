@@ -1,4 +1,4 @@
-const CACHE_KEY = 'checked_addresses';
+const CACHE_KEY = 'address_cache';
 const RESULTS_KEY = 'valid_mnemonics';
 
 export const saveToCache = (addresses: string[]) => {
@@ -11,11 +11,15 @@ export const saveToCache = (addresses: string[]) => {
   }
 };
 
-export const loadFromCache = (): Set<string> => {
+export const getFromCache = (): string[] => {
   try {
-    return new Set(JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'));
+    return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]');
   } catch (error) {
-    console.error('Error loading from cache:', error);
-    return new Set();
+    console.error('Error reading from cache:', error);
+    return [];
   }
+};
+
+export const clearCache = () => {
+  localStorage.removeItem(CACHE_KEY);
 }; 
