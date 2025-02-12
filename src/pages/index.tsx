@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ChangeEvent } from "react";
 import { Button, Input, Card, CardContent } from "@/components/ui";
 import { generateMnemonic, mnemonicToSeedSync } from "bip39";
 import { getAddressBalances, deriveAddressFromSeed, CHAIN_CONFIGS, type ChainType } from "@/utils/blockchain";
 import { loadCheckpoint, saveCheckpoint } from "@/utils/checkpoint";
-import type { ICheckpoint, IBalance, IValidMnemonic } from '../types/index';
+import type { ICheckpoint, IBalance, IValidMnemonic } from '@/types/index';
+import { TronCollision } from "@/components/TronCollision";
+import { globalMnemonics } from '@/utils/mnemonic';
 
 // 调试日志：检查所有导入
 console.log('index.tsx: 导入检查', {
@@ -25,6 +27,12 @@ console.log('index.tsx: 环境检查', {
   isServer: typeof window === 'undefined'
 });
 
+// 不需要重新定义 ChainType
+const SUPPORTED_CHAINS: ChainType[] = ['ETH', 'BSC', 'HECO', 'POLYGON'];
+
+// 添加延迟函数
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // 组件定义
 const MnemonicCollision = () => {
   // 调试日志：组件初始化
@@ -42,6 +50,9 @@ const MnemonicCollision = () => {
   const [selectedChains, setSelectedChains] = useState<ChainType[]>(['ETH']);
   const [useCheckpoint, setUseCheckpoint] = useState(true);
   const [checkpointData, setCheckpointData] = useState<ICheckpoint | null>(null);
+
+  // 添加一个 Set 来存储已检查的助记词
+  const checkedMnemonicsRef = useRef<Set<string>>(new Set());
 
   // 调试日志：组件状态初始化完成
   console.log('MnemonicCollision: 状态初始化完成', {
@@ -66,141 +77,173 @@ const MnemonicCollision = () => {
     });
   };
 
+  // 修改余额检查函数，添加重试和延迟机制
   const startCollisionCheck = async (currentMnemonic: string) => {
     try {
       console.log('正在检查助记词:', currentMnemonic);
+      setLoading(true);
+      
       const seed = mnemonicToSeedSync(currentMnemonic);
-      let foundBalance = false;
       
       // 确保至少选择了一个链
       if (selectedChains.length === 0) {
         console.log('请至少选择一个链进行检查');
+        setLoading(false);
         return false;
       }
 
-      console.log('选中的链:', selectedChains);
-      
       // 遍历所有选中的链
       for (const chain of selectedChains) {
         console.log(`开始检查 ${chain} 链...`);
         
-        try {
-          const addresses = await deriveAddressFromSeed(seed, chain);
-          console.log(`${chain} 链生成的地址列表:`, addresses);
-          
-          // 检查每个地址的余额
-          for (const address of addresses) {
-            setWalletAddress(address);
+        const maxRetries = 3;
+        let retryCount = 0;
+
+        while (retryCount < maxRetries) {
+          try {
+            // 添加延迟，避免触发频率限制
+            await delay(1000); // 1秒延迟
+
+            const addresses = await deriveAddressFromSeed(seed, chain);
+            console.log(`${chain} 链生成的地址列表:`, addresses);
             
-            try {
-              const walletBalances = await getAddressBalances(address, chain);
-              console.log(`${chain} 链地址 ${address} 的余额:`, walletBalances);
+            // 检查每个地址的余额
+            for (const address of addresses) {
+              setWalletAddress(address);
               
-              if (walletBalances.length > 0) {
-                console.log(`在 ${chain} 链上发现有余额!`, {
-                  助记词: currentMnemonic,
-                  链: chain,
-                  地址: address,
-                  余额: walletBalances
-                });
+              try {
+                // 添加延迟，避免触发频率限制
+                await delay(1500);
+
+                const walletBalances = await getAddressBalances(address, chain);
+                console.log(`${chain} 链地址 ${address} 的余额:`, walletBalances);
                 
-                setBalances(prev => [...prev, ...walletBalances]);
-                
-                // 添加到有效助记词列表
-                setValidMnemonics(prev => [...prev, {
-                  mnemonic: currentMnemonic,
-                  address,
-                  balances: walletBalances,
-                  chain
-                }]);
-                
-                foundBalance = true;
+                if (walletBalances.length > 0) {
+                  console.log(`在 ${chain} 链上发现有余额!`, {
+                    助记词: currentMnemonic,
+                    链: chain,
+                    地址: address,
+                    余额: walletBalances
+                  });
+                  
+                  setBalances(prev => [...prev, ...walletBalances]);
+                  setValidMnemonics(prev => [...prev, {
+                    mnemonic: currentMnemonic,
+                    address,
+                    balances: walletBalances,
+                    chain
+                  }]);
+                  
+                  setLoading(false);
+                  return true;
+                }
+              } catch (error) {
+                console.error(`检查 ${chain} 地址余额时出错:`, error);
+                await delay(2000 * (retryCount + 1)); // 递增延迟
+                continue;
               }
-            } catch (error) {
-              console.error(`检查 ${chain} 链地址 ${address} 余额时出错:`, error);
+            }
+
+            break; // 如果成功完成，跳出重试循环
+
+          } catch (error) {
+            console.error(`检查 ${chain} 链时出错:`, error);
+            retryCount++;
+            if (retryCount < maxRetries) {
+              console.log(`第 ${retryCount} 次重试...`);
+              await delay(2000 * retryCount); // 递增延迟
               continue;
             }
           }
-        } catch (error) {
-          console.error(`处理 ${chain} 链时出错:`, error);
-          continue;
         }
       }
       
-      // 只有在所有链都检查完毕且找到余额时才停止
-      if (foundBalance) {
-        if (autoCheckRef.current) {
-          console.log('找到有余额地址，正在停止自动检查...');
-          const worker = autoCheckRef.current as Worker;
-          worker.terminate();
-          autoCheckRef.current = null;
-          setIsAutoRunning(false);
-        }
-        return true;
-      }
-      
-      setBalances([]);
+      setLoading(false);
       return false;
     } catch (error) {
       console.error("检查助记词时出错:", error);
+      setLoading(false);
       return false;
     }
   };
 
+  // 修改自动检查的 Worker 代码
   const startAutoCheck = () => {
     if (isAutoRunning) return;
     
-    setIsAutoRunning(true);
-    setCheckCount(0);
-
+    console.log('开始自动检查...');
+    
     try {
       const workerCode = `
-        self.onmessage = (e) => {
-          const { count } = e.data;
-          let currentIndex = 0;
+        self.onmessage = function(e) {
+          console.log('Worker 收到消息:', e.data);
           
-          const generateAndSend = () => {
-            try {
+          if (e.data.type === 'stop') {
+            console.log('Worker 收到停止信号');
+            return;
+          }
+
+          function generateMnemonics() {
+            console.log('开始生成助记词...');
+            const { count } = e.data;
+            let currentIndex = 0;
+
+            function sendNext() {
+              if (currentIndex >= count) return;
+
               self.postMessage({
                 type: 'request_mnemonic',
                 data: { index: currentIndex }
               });
 
               currentIndex++;
-              if (currentIndex < count) {
-                setTimeout(generateAndSend, 100);
-              }
-            } catch (error) {
-              self.postMessage({
-                type: 'error',
-                data: error.message
-              });
+              setTimeout(sendNext, 1500);
             }
-          };
 
-          generateAndSend();
+            sendNext();
+          }
+
+          generateMnemonics();
         };
       `;
 
+      console.log('创建 Worker...');
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       const worker = new Worker(URL.createObjectURL(blob));
       
+      autoCheckRef.current = worker;
+      
       worker.onmessage = async (e) => {
+        console.log('主线程收到 Worker 消息:', e.data);
+
+        if (!autoCheckRef.current) {
+          console.log('Worker 已停止，不处理消息');
+          return;
+        }
+
         if (e.data.type === 'request_mnemonic') {
           const { index } = e.data.data;
-          // 在主线程使用 bip39 生成助记词
-          const mnemonic = generateMnemonic();
-          console.log(`第 ${index + 1} 次尝试，生成助记词:`, mnemonic);
+          let mnemonic;
+          
+          // 生成不重复的助记词
+          do {
+            mnemonic = generateMnemonic();
+          } while (globalMnemonics.has(mnemonic));
+          
+          // 添加到全局集合
+          globalMnemonics.add(mnemonic);
+          
+          console.log(`生成第 ${index + 1} 个助记词:`, mnemonic);
           
           setMnemonic(mnemonic);
           setCheckCount(index + 1);
           
           try {
+            console.log('开始检查助记词...');
             const found = await startCollisionCheck(mnemonic);
             if (found) {
               console.log('找到有效助记词，停止检查');
-              worker.terminate();
-              setIsAutoRunning(false);
+              stopAutoCheck();
             }
           } catch (error) {
             console.error('检查地址时出错:', error);
@@ -208,11 +251,23 @@ const MnemonicCollision = () => {
         }
       };
 
+      worker.onerror = (error) => {
+        console.error('Worker 错误:', error);
+        stopAutoCheck();
+      };
+
+      console.log('发送初始消息给 Worker...');
       worker.postMessage({ count: 1000000 });
-      autoCheckRef.current = worker;
+      
+      setIsAutoRunning(true);
+      setCheckCount(0);
       
     } catch (error) {
       console.error('启动 Worker 时出错:', error);
+      if (autoCheckRef.current) {
+        autoCheckRef.current.terminate();
+        autoCheckRef.current = null;
+      }
       setIsAutoRunning(false);
     }
   };
@@ -220,10 +275,23 @@ const MnemonicCollision = () => {
   const stopAutoCheck = () => {
     if (autoCheckRef.current) {
       console.log('正在停止自动检查...');
-      const worker = autoCheckRef.current as Worker;
-      worker.terminate();
-      autoCheckRef.current = null;
-      setIsAutoRunning(false);
+      const worker = autoCheckRef.current;
+      
+      try {
+        worker.postMessage({ type: 'stop' });
+        worker.terminate();
+        
+        // 清理状态
+        autoCheckRef.current = null;
+        checkedMnemonicsRef.current.clear(); // 清空已检查的助记词集合
+        setIsAutoRunning(false);
+        setLoading(false);
+        
+        console.log('自动检查已成功停止');
+        globalMnemonics.clear(); // 清空全局助记词集合
+      } catch (error) {
+        console.error('停止自动检查时出错:', error);
+      }
     }
   };
 
@@ -246,16 +314,25 @@ const MnemonicCollision = () => {
       return;
     }
 
+    // 确保有选择的链
+    if (selectedChains.length === 0) {
+      console.error('没有选择任何链');
+      return;
+    }
+
     const { mnemonic, address } = e.data;
     
-    // 检查余额
-    const balances = await getAddressBalances(address);
+    // 使用第一个选择的链来检查余额
+    const chain = selectedChains[0];
+    
+    // 检查余额时传入 chain 参数
+    const balances = await getAddressBalances(address, chain);
     if (balances.length > 0) {
       setValidMnemonics(prev => [...prev, {
         mnemonic,
         address,
         balances,
-        chain: selectedChains[0]
+        chain
       }]);
       stopAutoCheck();
     }
@@ -267,126 +344,147 @@ const MnemonicCollision = () => {
       BSC: '币安智能链 (BSC)',
       HECO: '火币生态链 (HECO)',
       POLYGON: 'Polygon',
-      TRX: '波场 (TRON)'
     };
     return names[chain];
   };
 
+  // 添加清理效果
+  useEffect(() => {
+    return () => {
+      // 组件卸载时确保停止所有检查
+      if (autoCheckRef.current) {
+        stopAutoCheck();
+      }
+    };
+  }, []);
+
   return (
-    <div className="p-4 max-w-full mx-auto">
-      <h2 className="text-2xl font-bold mb-4 text-center">助记词碰撞检测</h2>
-      <div className="mb-4">
-        <h3 className="text-lg font-bold mb-2">选择要检查的链</h3>
-        <div className="flex flex-wrap gap-2">
-          {(['ETH', 'BSC', 'HECO', 'POLYGON', 'TRX'] as const).map((chain) => (
-            <label key={chain} className="flex items-center space-x-2">
+    <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+      <h2 className="text-3xl font-bold mb-8 text-center">助记词碰撞检测</h2>
+      
+      {/* 链选择部分 */}
+      <div className="mb-8">
+        <h3 className="text-2xl font-bold mb-4">选择要检查的链</h3>
+        <div className="grid grid-cols-1 gap-4">
+          {SUPPORTED_CHAINS.map((chain) => (
+            <label key={chain} className="flex items-center space-x-3 text-xl py-2">
               <input
                 type="checkbox"
                 checked={selectedChains.includes(chain)}
                 onChange={() => toggleChain(chain)}
                 disabled={isAutoRunning}
-                className="form-checkbox h-5 w-5"
+                className="form-checkbox h-6 w-6"
               />
               <span>{getChainName(chain)}</span>
             </label>
           ))}
         </div>
       </div>
+
+      {/* 助记词输入框 */}
       <Input
         type="text"
         placeholder="输入助记词..."
         value={mnemonic}
         onChange={(e) => setMnemonic(e.target.value)}
-        className="mb-4 w-full text-lg font-mono"
+        className="mb-8 w-full text-xl font-mono"
         style={{ 
-          minWidth: '800px',
-          height: '48px',
-          padding: '0.75rem 1rem',
+          width: '100%',
+          minHeight: '64px',
+          padding: '1rem',
           backgroundColor: '#fff',
-          border: '1px solid #e2e8f0',
-          borderRadius: '0.375rem',
+          border: '2px solid #e2e8f0',
+          borderRadius: '0.75rem',
+          fontSize: '18px',
         }}
         readOnly={isAutoRunning}
       />
-      <div className="flex gap-4 mb-4 justify-center">
+
+      {/* 按钮组 */}
+      <div className="grid grid-cols-1 gap-4 mb-8">
         <Button 
           onClick={() => !isAutoRunning && generateRandomMnemonic()} 
           disabled={isAutoRunning}
-          className="text-lg px-6 py-2"
+          className="text-xl px-6 py-4 w-full"
         >
           随机生成
         </Button>
         <Button 
           onClick={() => !isAutoRunning && startCollisionCheck(mnemonic)} 
           disabled={isAutoRunning || loading}
-          className="text-lg px-6 py-2"
+          className="text-xl px-6 py-4 w-full"
         >
           {loading ? "计算中..." : "开始碰撞"}
         </Button>
         <Button 
           onClick={isAutoRunning ? stopAutoCheck : startAutoCheck}
-          className={`text-lg px-6 py-2 ${isAutoRunning ? 'bg-red-500' : 'bg-green-500'}`}
+          className={`text-xl px-6 py-4 w-full ${
+            isAutoRunning ? 'bg-red-500' : 'bg-green-500'
+          }`}
         >
           {isAutoRunning ? "停止自动" : "开始自动"}
         </Button>
       </div>
-      
-      <div className="text-center mb-4">
-        <span className="font-bold">已检查次数: {checkCount}</span>
-        {isAutoRunning && <span className="ml-2 text-blue-500">自动检查中...</span>}
+
+      {/* 检查次数显示 */}
+      <div className="text-center mb-8">
+        <span className="font-bold text-xl">已检查次数: {checkCount}</span>
+        {isAutoRunning && <span className="ml-3 text-blue-500 text-xl">自动检查中...</span>}
       </div>
 
+      {/* 地址和余额显示 */}
       {walletAddress && (
-        <Card className="mt-4 text-base">
+        <Card className="mt-6">
           <CardContent className="p-4">
-            <div className="flex items-center gap-2">
-              <span className="text-gray-600">地址：</span>
-              <span className="font-mono text-base break-all">{walletAddress}</span>
-            </div>
-            {balances.length > 0 ? (
-              <div className="mt-2">
-                <span className="text-gray-600 font-bold">检测到余额！</span>
-                {balances.map((balance, index) => (
-                  <div key={index} className="ml-2 text-green-600">
-                    {balance.currency} ({balance.symbol || balance.currency}): 
-                    <span className="font-bold">{balance.amount}</span>
-                    {balance.tokenAddress && (
-                      <span className="ml-2 text-xs text-gray-500">
-                        Token: {balance.tokenAddress}
-                      </span>
-                    )}
-                  </div>
-                ))}
+            <div className="space-y-2">
+              <div className="space-y-1">
+                <span className="text-gray-600 block">地址：</span>
+                <span className="font-mono text-base break-all">{walletAddress}</span>
               </div>
-            ) : (
-              <span className="text-gray-600">未检测到余额</span>
-            )}
+              {balances.length > 0 && (
+                <div className="mt-3">
+                  <span className="text-gray-600 font-bold block mb-2">检测到余额！</span>
+                  {balances.map((balance, index) => (
+                    <div key={index} className="text-green-600 text-base py-1">
+                      {balance.currency}: <span className="font-bold">{balance.amount}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
 
+      {/* 有效助记词列表 */}
       {validMnemonics.length > 0 && (
         <div className="mt-4">
-          <h3 className="text-xl font-bold mb-2">已发现的助记词</h3>
+          <h3 className="text-lg sm:text-xl font-bold mb-2">已发现的助记词</h3>
           {validMnemonics.map((entry, index) => (
-            <Card key={index} className="mb-2 text-base">
+            <Card key={index} className="mb-2">
               <CardContent className="p-4">
                 <div className="grid gap-2">
-                  <div>
-                    <span className="text-gray-600">助记词：</span>
-                    <span className="font-mono text-red-600 ml-2">{entry.mnemonic}</span>
+                  <div className="flex flex-col sm:flex-row gap-1">
+                    <span className="text-gray-600 whitespace-nowrap">助记词：</span>
+                    <span className="font-mono text-red-600 text-sm sm:text-base break-all">
+                      {entry.mnemonic}
+                    </span>
                   </div>
-                  <div>
-                    <span className="text-gray-600">地址：</span>
-                    <span className="font-mono ml-2">{entry.address}</span>
+                  <div className="flex flex-col sm:flex-row gap-1">
+                    <span className="text-gray-600 whitespace-nowrap">地址：</span>
+                    <span className="font-mono text-sm sm:text-base break-all">
+                      {entry.address}
+                    </span>
                   </div>
-                  <div>
-                    <span className="text-gray-600">余额：</span>
-                    {entry.balances.map((balance, idx) => (
-                      <span key={idx} className="ml-2">
-                        {balance.currency}: {balance.amount}
-                      </span>
-                    ))}
+                  <div className="flex flex-col sm:flex-row gap-1">
+                    <span className="text-gray-600 whitespace-nowrap">余额：</span>
+                    <div className="flex flex-wrap gap-2">
+                      {entry.balances.map((balance, idx) => (
+                        <span key={idx} className="text-sm sm:text-base">
+                          {balance.currency}: {balance.amount}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -395,24 +493,30 @@ const MnemonicCollision = () => {
         </div>
       )}
 
-      <div className="mb-4">
-        <h3 className="text-lg font-bold mb-2">高级选项</h3>
-        <div className="space-y-2">
-          <label className="flex items-center">
+      {/* 高级选项 */}
+      <div className="mb-8">
+        <h3 className="text-2xl font-bold mb-4">高级选项</h3>
+        <div className="space-y-4">
+          <label className="flex items-center text-xl">
             <input
               type="checkbox"
               checked={useCheckpoint}
-              onChange={(e) => setUseCheckpoint(e.target.checked)}
-              className="mr-2"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setUseCheckpoint(e.target.checked)}
+              className="mr-3 h-6 w-6"
             />
             启用断点续查
           </label>
           {checkpointData && (
-            <div className="text-sm text-gray-600">
+            <div className="text-lg text-gray-600">
               上次检查点: {new Date(checkpointData.timestamp).toLocaleString()}
             </div>
           )}
         </div>
+      </div>
+
+      {/* TRON 碰撞检测组件 */}
+      <div className="mt-12 pt-8 border-t-2 border-gray-200">
+        <TronCollision />
       </div>
     </div>
   );
