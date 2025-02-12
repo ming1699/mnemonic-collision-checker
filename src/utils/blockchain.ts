@@ -8,9 +8,14 @@ interface Balance {
   tokenAddress?: string;
 }
 
-// 添加更多常用的派生路径
-const DERIVATION_PATHS = {
-  // 以太坊系列
+// 定义所有支持的链类型
+export type ChainType = 'ETH' | 'BSC' | 'HECO' | 'POLYGON';
+
+// 定义派生路径类型
+type DerivationPaths = Record<ChainType, readonly string[]>;
+
+// 修改 DERIVATION_PATHS 的定义，移除 TRX
+const DERIVATION_PATHS: DerivationPaths = {
   ETH: [
     "m/44'/60'/0'/0/0",     // 标准路径
     "m/44'/60'/0'",         // Ledger Legacy
@@ -31,16 +36,10 @@ const DERIVATION_PATHS = {
   POLYGON: [
     "m/44'/60'/0'/0/0",
     "m/44'/60'/0'/0/1",
-  ],
-  TRX: [
-    "m/44'/195'/0'/0/0",
-    "m/44'/195'/0'/0/1",
   ]
 } as const;
 
-export type ChainType = keyof typeof DERIVATION_PATHS | 'TRX';
-
-export const deriveAddressFromSeed = async (seed: Buffer, chainType: ChainType = 'ETH'): Promise<string[]> => {
+export const deriveAddressFromSeed = async (seed: Buffer, chainType: ChainType): Promise<string[]> => {
   try {
     const hdkey = require('hdkey');
     const ethUtil = require('ethereumjs-util');
@@ -94,135 +93,130 @@ const generateChildAddresses = (seed: Buffer, basePath: string, count: number = 
   return addresses;
 };
 
-// 修改余额检查函数支持多链
-export async function getAddressBalances(address: string, chain: ChainType = 'ETH') {
+export const getAddressBalances = async (address: string, chain: ChainType): Promise<Balance[]> => {
   try {
-    console.log(`正在检查 ${CHAIN_CONFIGS[chain].name} 链上的地址 ${address}`);
-    
-    // 如果是 TRX，使用不同的 API 处理逻辑
-    if (chain === 'TRX') {
-      // 这里添加 TRX 的特殊处理逻辑
-      console.log('TRX 链暂不支持余额检查');
-      return [];
-    }
-
-    const config = CHAIN_CONFIGS[chain];
-    const maxRetries = 3;
-    let retryCount = 0;
     const balances: Balance[] = [];
     
-    while (retryCount < maxRetries) {
-      try {
-        // 检查原生代币余额
-        console.log(`检查 ${config.name} 原生代币余额...`);
-        const nativeResponse = await fetch(
-          `${config.apiUrl}?module=account&action=balance&address=${address}&tag=latest&apikey=${config.apiKey}`
+    // 获取 API keys
+    const etherscanKey = process.env.NEXT_PUBLIC_ETHERSCAN_API_KEY;
+    const bscscanKey = process.env.NEXT_PUBLIC_BSCSCAN_API_KEY;
+    const polygonscanKey = process.env.NEXT_PUBLIC_POLYGONSCAN_API_KEY;
+    const hecoinfoKey = process.env.NEXT_PUBLIC_HECOINFO_API_KEY;
+    
+    // 根据不同链调用不同的 API
+    switch (chain) {
+      case 'ETH':
+        // 以太坊余额检查
+        const ethResponse = await fetch(
+          `/api/etherscan/api?module=account&action=balance&address=${address}&tag=latest&apikey=${etherscanKey}`
         );
-
-        if (nativeResponse.ok) {
-          const nativeData = await nativeResponse.json();
-          if (nativeData.status === "1" && nativeData.result) {
-            const balanceInWei = nativeData.result;
-            const balanceInEth = parseInt(balanceInWei) / 1e18;
-            
-            if (balanceInEth > 0) {
-              console.log(`在 ${config.name} 上发现原生代币余额: ${balanceInEth}`);
-              balances.push({
-                currency: chain,
-                amount: balanceInEth.toFixed(6)
-              });
-            }
-          }
+        
+        if (!ethResponse.ok) {
+          console.error('ETH API 请求失败:', await ethResponse.text());
+          return [];
         }
-
-        // 检查 ERC20 代币余额
-        console.log(`检查 ${config.name} ERC20 代币余额...`);
-        const tokenResponse = await fetch(
-          `${config.apiUrl}?module=account&action=tokentx&address=${address}&startblock=0&endblock=999999999&sort=desc&apikey=${config.apiKey}`
+        
+        const ethData = await ethResponse.json();
+        if (ethData.status === '1' && Number(ethData.result) > 0) {
+          balances.push({
+            currency: 'ETH',
+            amount: (Number(ethData.result) / 1e18).toString(),
+            symbol: 'ETH'
+          });
+        }
+        break;
+        
+      case 'BSC':
+        // BSC 余额检查
+        const bscResponse = await fetch(
+          `/api/bscscan/api?module=account&action=balance&address=${address}&tag=latest&apikey=${bscscanKey}`
         );
-
-        if (tokenResponse.ok) {
-          const tokenData = await tokenResponse.json();
-          if (tokenData.status === "1" && tokenData.result) {
-            for (const tx of tokenData.result.slice(0, 5)) {
-              console.log(`检查代币: ${tx.tokenName}`);
-              const tokenBalanceResponse = await fetch(
-                `${config.apiUrl}?module=account&action=tokenbalance&contractaddress=${tx.contractAddress}&address=${address}&tag=latest&apikey=${config.apiKey}`
-              );
-
-              if (tokenBalanceResponse.ok) {
-                const tokenBalanceData = await tokenBalanceResponse.json();
-                if (tokenBalanceData.status === "1" && tokenBalanceData.result) {
-                  const decimals = parseInt(tx.tokenDecimal);
-                  const balance = parseInt(tokenBalanceData.result) / Math.pow(10, decimals);
-
-                  if (balance > 0) {
-                    console.log(`发现代币余额: ${tx.tokenName} = ${balance}`);
-                    balances.push({
-                      currency: tx.tokenName,
-                      symbol: tx.tokenSymbol,
-                      amount: balance.toFixed(6),
-                      tokenAddress: tx.contractAddress
-                    });
-                  }
-                }
-              }
-              await new Promise(resolve => setTimeout(resolve, 200));
-            }
-          }
+        
+        if (!bscResponse.ok) {
+          console.error('BSC API 请求失败:', await bscResponse.text());
+          return [];
         }
-
-        if (balances.length > 0) {
-          console.log(`在 ${config.name} 上发现总计 ${balances.length} 个代币有余额`);
-        } else {
-          console.log(`在 ${config.name} 上未发现任何余额`);
+        
+        const bscData = await bscResponse.json();
+        if (bscData.status === '1' && Number(bscData.result) > 0) {
+          balances.push({
+            currency: 'BNB',
+            amount: (Number(bscData.result) / 1e18).toString(),
+            symbol: 'BNB'
+          });
         }
-        return balances;
-
-      } catch (error) {
-        retryCount++;
-        console.error(`检查 ${config.name} 余额失败，第 ${retryCount} 次重试:`, error);
-        if (retryCount === maxRetries) return balances;
-        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-      }
+        break;
+        
+      case 'HECO':
+        // HECO 余额检查
+        const hecoResponse = await fetch(
+          `/api/hecoinfo/api?module=account&action=balance&address=${address}&tag=latest&apikey=${hecoinfoKey}`
+        );
+        
+        if (!hecoResponse.ok) {
+          console.error('HECO API 请求失败:', await hecoResponse.text());
+          return [];
+        }
+        
+        const hecoData = await hecoResponse.json();
+        if (hecoData.status === '1' && Number(hecoData.result) > 0) {
+          balances.push({
+            currency: 'HT',
+            amount: (Number(hecoData.result) / 1e18).toString(),
+            symbol: 'HT'
+          });
+        }
+        break;
+        
+      case 'POLYGON':
+        // Polygon 余额检查
+        const polygonResponse = await fetch(
+          `/api/polygonscan/api?module=account&action=balance&address=${address}&tag=latest&apikey=${polygonscanKey}`
+        );
+        
+        if (!polygonResponse.ok) {
+          console.error('Polygon API 请求失败:', await polygonResponse.text());
+          return [];
+        }
+        
+        const polygonData = await polygonResponse.json();
+        if (polygonData.status === '1' && Number(polygonData.result) > 0) {
+          balances.push({
+            currency: 'MATIC',
+            amount: (Number(polygonData.result) / 1e18).toString(),
+            symbol: 'MATIC'
+          });
+        }
+        break;
     }
+    
     return balances;
   } catch (error) {
-    console.error(`检查 ${chain} 余额时出错:`, error);
+    console.error('检查余额时出错:', error);
     return [];
   }
-}
+};
 
-// 导出 CHAIN_CONFIGS
+// 导出链配置
 export const CHAIN_CONFIGS = {
   ETH: {
-    apiUrl: '/api/etherscan',
-    apiKey: process.env.NEXT_PUBLIC_ETHERSCAN_API_KEY,
-    explorer: 'https://etherscan.io',
-    name: '以太坊'
+    name: '以太坊',
+    symbol: 'ETH',
+    decimals: 18
   },
   BSC: {
-    apiUrl: '/api/bscscan',
-    apiKey: process.env.NEXT_PUBLIC_BSCSCAN_API_KEY,
-    explorer: 'https://bscscan.com',
-    name: '币安智能链'
+    name: '币安智能链',
+    symbol: 'BNB',
+    decimals: 18
   },
   HECO: {
-    apiUrl: '/api/hecoinfo',
-    apiKey: process.env.NEXT_PUBLIC_HECOINFO_API_KEY,
-    explorer: 'https://hecoinfo.com',
-    name: '火币生态链'
+    name: '火币生态链',
+    symbol: 'HT',
+    decimals: 18
   },
   POLYGON: {
-    apiUrl: '/api/polygonscan',
-    apiKey: process.env.NEXT_PUBLIC_POLYGONSCAN_API_KEY,
-    explorer: 'https://polygonscan.com',
-    name: 'Polygon'
-  },
-  TRX: {
-    apiUrl: '/api/tronscan',
-    apiKey: process.env.NEXT_PUBLIC_TRONSCAN_API_KEY,
-    explorer: 'https://tronscan.org',
-    name: '波场'
+    name: 'Polygon',
+    symbol: 'MATIC',
+    decimals: 18
   }
 } as const;

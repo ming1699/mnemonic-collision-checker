@@ -16,20 +16,24 @@ const nextConfig = {
     return [
       {
         source: '/api/etherscan/:path*',
-        destination: 'https://api.etherscan.io/api/:path*',
+        destination: 'https://api.etherscan.io/:path*',
       },
       {
         source: '/api/bscscan/:path*',
-        destination: 'https://api.bscscan.com/api/:path*',
+        destination: 'https://api.bscscan.com/:path*',
       },
       {
         source: '/api/polygonscan/:path*',
-        destination: 'https://api.polygonscan.com/api/:path*',
+        destination: 'https://api.polygonscan.com/:path*',
       },
       {
         source: '/api/hecoinfo/:path*',
-        destination: 'https://api.hecoinfo.com/api/:path*',
+        destination: 'https://api.hecoinfo.com/:path*',
       },
+      {
+        source: '/api/tronscan/:path*',
+        destination: 'https://apilist.tronscan.org/api/:path*'
+      }
     ]
   }
 };
